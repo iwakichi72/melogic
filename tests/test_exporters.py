@@ -95,6 +95,16 @@ class ExporterTests(unittest.TestCase):
             self.assertTrue(paths.preview_wav.exists())
             self.assertEqual(result.midi_data.synthesize_sample_rate, 44100)
 
+    def test_export_analysis_can_use_explicit_output_stem(self):
+        result = self.make_result()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = export_analysis(result, temp_dir, output_stem="band take vocals")
+
+            self.assertEqual(paths.midi.name, "band_take_vocals.mid")
+            self.assertEqual(paths.json.name, "band_take_vocals.json")
+            self.assertEqual(paths.csv.name, "band_take_vocals.csv")
+
     def test_write_midi_requires_midi_data(self):
         result = AnalysisResult(
             source_audio="samples/vocal.wav",

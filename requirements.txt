@@ -4,3 +4,4 @@ librosa>=0.8.0
 numpy>=1.18
 streamlit>=1.54
 setuptools<81
+onnxruntime>=1.18

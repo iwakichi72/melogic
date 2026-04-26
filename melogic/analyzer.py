@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 from datetime import datetime, timezone
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -67,7 +69,11 @@ def analyze_audio(input_audio: str | Path) -> AnalysisResult:
         ) from exc
 
     try:
-        _model_output, midi_data, note_events = predict(str(input_path))
+        model_path = preferred_basic_pitch_model_path()
+        if model_path is not None:
+            _model_output, midi_data, note_events = predict(str(input_path), model_or_model_path=model_path)
+        else:
+            _model_output, midi_data, note_events = predict(str(input_path))
     except Exception as exc:  # Basic Pitch can raise runtime-specific backend errors.
         raise AnalysisError(f"Basic Pitch analysis failed for {input_path}: {exc}") from exc
 
@@ -80,3 +86,34 @@ def analyze_audio(input_audio: str | Path) -> AnalysisResult:
         notes=notes,
         midi_data=midi_data,
     )
+
+
+def preferred_basic_pitch_model_path() -> Path | None:
+    """Use ONNX when available to avoid fragile CoreML compilation in local apps."""
+    if find_spec("onnxruntime") is None:
+        return None
+
+    try:
+        from basic_pitch import ICASSP_2022_MODEL_PATH
+    except ImportError:
+        return None
+
+    onnx_path = Path(ICASSP_2022_MODEL_PATH).with_suffix(".onnx")
+    if onnx_path.exists():
+        enable_basic_pitch_onnx_runtime()
+        return onnx_path
+    return None
+
+
+def enable_basic_pitch_onnx_runtime() -> None:
+    """Refresh Basic Pitch ONNX globals if onnxruntime was installed after import."""
+    try:
+        onnxruntime = importlib.import_module("onnxruntime")
+        basic_pitch = importlib.import_module("basic_pitch")
+        basic_pitch_inference = importlib.import_module("basic_pitch.inference")
+    except ImportError:
+        return
+
+    setattr(basic_pitch, "ONNX_PRESENT", True)
+    setattr(basic_pitch_inference, "ONNX_PRESENT", True)
+    setattr(basic_pitch_inference, "ort", onnxruntime)

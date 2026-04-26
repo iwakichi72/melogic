@@ -5,7 +5,17 @@ import argparse
 import sys
 from pathlib import Path
 
-from melogic import AnalysisError, ExportError, analyze_audio, export_analysis
+from melogic import (
+    AnalysisError,
+    AnalysisMode,
+    ExportError,
+    analysis_mode_label,
+    analysis_mode_values,
+    analyze_audio,
+    export_analysis,
+    output_stem_for_mode,
+    prepare_analysis_input,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,6 +29,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also render a simple WAV preview of the generated MIDI for quick listening.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=analysis_mode_values(),
+        default=AnalysisMode.STANDARD.value,
+        help=(
+            "Analysis mode. Use 'vocal' or 'accompaniment' to run optional Demucs "
+            "stem separation before Basic Pitch."
+        ),
+    )
     return parser
 
 
@@ -30,8 +49,19 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         validate_output_target(output_dir)
-        result = analyze_audio(input_audio)
-        paths = export_analysis(result, output_dir, preview_wav=args.preview_wav)
+        if args.mode == AnalysisMode.STANDARD.value:
+            result = analyze_audio(input_audio)
+            paths = export_analysis(result, output_dir, preview_wav=args.preview_wav)
+            prepared_input = None
+        else:
+            prepared_input = prepare_analysis_input(input_audio, args.mode, output_dir)
+            result = analyze_audio(prepared_input.path)
+            paths = export_analysis(
+                result,
+                output_dir,
+                preview_wav=args.preview_wav,
+                output_stem=output_stem_for_mode(input_audio, args.mode),
+            )
     except AnalysisError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -43,6 +73,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"Source: {result.source_audio}")
+    print(f"Analysis Mode: {analysis_mode_label(args.mode)}")
+    if prepared_input is not None:
+        print(f"Original Source: {prepared_input.source_path}")
+        print(f"Analysis Input: {prepared_input.path}")
     print(f"Notes: {result.note_count}")
     print(f"MIDI: {paths.midi}")
     print(f"JSON: {paths.json}")

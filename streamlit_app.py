@@ -10,7 +10,18 @@ import sys
 import streamlit as st
 import streamlit.components.v1 as components
 
-from melogic import AnalysisError, ExportError, analyze_audio, export_analysis
+from melogic import (
+    AnalysisError,
+    AnalysisMode,
+    ExportError,
+    analysis_mode_description,
+    analysis_mode_label,
+    analyze_audio,
+    export_analysis,
+    get_demucs_status,
+    output_stem_for_mode,
+    prepare_analysis_input,
+)
 from melogic.gui_io import save_audio_bytes
 from melogic.visualization import build_piano_roll_rows
 
@@ -31,18 +42,19 @@ def main() -> None:
 
     left, right = st.columns([0.9, 1.1], gap="large")
     with left:
-        source_bytes, source_name, output_dir = render_input_panel()
+        source_bytes, source_name, output_dir, analysis_mode = render_input_panel()
     with right:
         render_result_panel()
 
     if source_bytes is not None and st.button("変換する", type="primary", use_container_width=True):
-        run_conversion(source_bytes, source_name, output_dir)
+        run_conversion(source_bytes, source_name, output_dir, analysis_mode)
 
 
-def render_input_panel() -> tuple[bytes | None, str | None, Path]:
+def render_input_panel() -> tuple[bytes | None, str | None, Path, AnalysisMode]:
     st.subheader("入力")
     input_mode = st.radio("入力方法", ["録音", "ファイル"], horizontal=True)
     output_dir = Path(st.text_input("出力先", value=str(DEFAULT_OUTPUT_DIR))).expanduser()
+    analysis_mode = render_analysis_mode_selector()
 
     source_bytes = None
     source_name = None
@@ -65,7 +77,29 @@ def render_input_panel() -> tuple[bytes | None, str | None, Path]:
             st.audio(source_bytes, format=uploaded_audio.type or "audio/wav")
 
     st.info("変換すると、MIDI / JSON / CSV / 確認用WAVが出力先に保存されます。")
-    return source_bytes, source_name, output_dir
+    return source_bytes, source_name, output_dir, analysis_mode
+
+
+def render_analysis_mode_selector() -> AnalysisMode:
+    st.write("解析モード")
+    options = [AnalysisMode.STANDARD, AnalysisMode.VOCAL, AnalysisMode.ACCOMPANIMENT]
+    mode = st.selectbox(
+        "Basic Pitchに渡す音源",
+        options,
+        format_func=analysis_mode_label,
+        help="バンド曲では、先にDemucsで音源分離してから解析すると狙った旋律を拾いやすくなります。",
+    )
+    st.caption(analysis_mode_description(mode))
+
+    demucs_status = get_demucs_status()
+    if mode is not AnalysisMode.STANDARD and not demucs_status["ok"]:
+        st.warning(
+            "この解析モードにはDemucsが必要です。"
+            "`.venv/bin/python -m pip install -r requirements-band.txt` を実行してから使ってください。"
+        )
+    elif mode is not AnalysisMode.STANDARD:
+        st.success(f"Demucs: {demucs_status['message']}")
+    return mode
 
 
 def render_result_panel() -> None:
@@ -78,12 +112,18 @@ def render_result_panel() -> None:
     paths = result["paths"]
     notes = result["notes"]
 
-    metrics = st.columns(3)
+    metrics = st.columns(4)
     metrics[0].metric("Notes", len(notes))
     metrics[1].metric("MIDI", paths.midi.name)
     metrics[2].metric("Preview", paths.preview_wav.name if paths.preview_wav else "off")
+    metrics[3].metric("Mode", result.get("analysis_mode_short", "標準"))
 
     preview_audio = paths.preview_wav.read_bytes() if paths.preview_wav is not None and paths.preview_wav.exists() else None
+
+    with st.expander("解析ソース"):
+        st.write(f"解析モード: `{result.get('analysis_mode', '標準')}`")
+        st.write(f"元音源: `{result.get('source', '')}`")
+        st.write(f"解析入力: `{result.get('analysis_input', result.get('source', ''))}`")
 
     piano_roll_tab, table_tab = st.tabs(["横ノーツビュー", "一覧"])
     with piano_roll_tab:
@@ -433,12 +473,24 @@ def render_downloads(paths) -> None:
         )
 
 
-def run_conversion(source_bytes: bytes, source_name: str | None, output_dir: Path) -> None:
+def run_conversion(
+    source_bytes: bytes,
+    source_name: str | None,
+    output_dir: Path,
+    analysis_mode: AnalysisMode,
+) -> None:
     try:
         saved_input = save_audio_bytes(source_bytes, source_name, output_dir)
-        with st.spinner("Basic Pitchで解析しています。長い音源は少し時間がかかります。"):
-            analysis = analyze_audio(saved_input.path)
-            paths = export_analysis(analysis, output_dir, preview_wav=True)
+        spinner_message = build_spinner_message(analysis_mode)
+        with st.spinner(spinner_message):
+            prepared_input = prepare_analysis_input(saved_input.path, analysis_mode, output_dir)
+            analysis = analyze_audio(prepared_input.path)
+            paths = export_analysis(
+                analysis,
+                output_dir,
+                preview_wav=True,
+                output_stem=output_stem_for_mode(saved_input.path, analysis_mode),
+            )
     except (AnalysisError, ExportError, OSError) as exc:
         st.error(f"変換に失敗しました: {exc}")
         return
@@ -447,13 +499,31 @@ def run_conversion(source_bytes: bytes, source_name: str | None, output_dir: Pat
         "paths": paths,
         "notes": [note.to_dict() for note in analysis.notes],
         "source": str(saved_input.path),
+        "analysis_input": str(prepared_input.path),
+        "analysis_mode": prepared_input.label,
+        "analysis_mode_short": short_analysis_mode_label(prepared_input.mode),
     }
     st.session_state["status_message"] = "変換が完了しました。"
     st.rerun()
 
 
+def build_spinner_message(analysis_mode: AnalysisMode) -> str:
+    if analysis_mode is AnalysisMode.STANDARD:
+        return "Basic Pitchで解析しています。長い音源は少し時間がかかります。"
+    return "Demucsで音源分離してからBasic Pitchで解析しています。バンド曲は少し時間がかかります。"
+
+
+def short_analysis_mode_label(analysis_mode: AnalysisMode) -> str:
+    if analysis_mode is AnalysisMode.VOCAL:
+        return "ボーカル"
+    if analysis_mode is AnalysisMode.ACCOMPANIMENT:
+        return "伴奏"
+    return "標準"
+
+
 def render_runtime_notice() -> None:
     status = get_basic_pitch_status()
+    demucs_status = get_demucs_status()
     if not status["ok"]:
         st.warning(
             "Basic Pitchを読み込めていません。ターミナルでこのアプリを停止し、"
@@ -463,6 +533,7 @@ def render_runtime_notice() -> None:
     with st.expander("実行環境", expanded=not status["ok"]):
         st.write(f"Python: `{sys.executable}`")
         st.write(f"Basic Pitch: `{status['message']}`")
+        st.write(f"Demucs: `{demucs_status['message']}`")
 
 
 def get_basic_pitch_status() -> dict[str, object]:
@@ -528,6 +599,17 @@ def inject_styles() -> None:
           color: var(--melogic-text);
           background: #ffffff;
           border: 1px solid var(--melogic-line);
+        }
+        .stSelectbox [data-baseweb="select"] *,
+        .stRadio [data-baseweb="radio"] *,
+        .stRadio label *,
+        .stFileUploader *,
+        .stAudioInput * {
+          color: var(--melogic-text) !important;
+        }
+        .stSelectbox [data-baseweb="select"] > div {
+          background: #ffffff;
+          border-color: var(--melogic-line);
         }
         .stButton > button,
         .stDownloadButton > button {

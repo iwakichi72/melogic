@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,11 +33,16 @@ class ExportPaths:
     preview_wav: Path | None = None
 
 
-def export_analysis(result: AnalysisResult, output_dir: str | Path, preview_wav: bool = False) -> ExportPaths:
+def export_analysis(
+    result: AnalysisResult,
+    output_dir: str | Path,
+    preview_wav: bool = False,
+    output_stem: str | None = None,
+) -> ExportPaths:
     out_dir = Path(output_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    stem = Path(result.source_audio).stem
+    stem = sanitize_output_stem(output_stem or Path(result.source_audio).stem)
     paths = ExportPaths(
         midi=out_dir / f"{stem}.mid",
         json=out_dir / f"{stem}.json",
@@ -53,6 +59,11 @@ def export_analysis(result: AnalysisResult, output_dir: str | Path, preview_wav:
         except PreviewError as exc:
             raise ExportError(str(exc)) from exc
     return paths
+
+
+def sanitize_output_stem(stem: str) -> str:
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-")
+    return safe_stem or "analysis"
 
 
 def write_midi(result: AnalysisResult, output_path: str | Path) -> None:

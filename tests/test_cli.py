@@ -76,6 +76,42 @@ class CliTests(unittest.TestCase):
         self.assertIn("Preview WAV:", stdout.getvalue())
         export_mock.assert_called_once_with(result, Path(temp_dir), preview_wav=True)
 
+    def test_main_can_run_vocal_mode_with_prepared_stem(self):
+        result = self.make_result()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stem_path = Path(temp_dir) / "_stems" / "htdemucs" / "mix" / "vocals.wav"
+            paths = ExportPaths(
+                midi=Path(temp_dir) / "mix_vocals.mid",
+                json=Path(temp_dir) / "mix_vocals.json",
+                csv=Path(temp_dir) / "mix_vocals.csv",
+            )
+            prepared_input = type(
+                "Prepared",
+                (),
+                {"path": stem_path, "source_path": Path("samples/mix.wav")},
+            )()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with patch("audio_to_midi.prepare_analysis_input", return_value=prepared_input) as prepare_mock:
+                with patch("audio_to_midi.analyze_audio", return_value=result) as analyze_mock:
+                    with patch("audio_to_midi.export_analysis", return_value=paths) as export_mock:
+                        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                            exit_code = audio_to_midi.main(["samples/mix.wav", temp_dir, "--mode", "vocal"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertIn("Analysis Input:", stdout.getvalue())
+        prepare_mock.assert_called_once_with(Path("samples/mix.wav"), "vocal", Path(temp_dir))
+        analyze_mock.assert_called_once_with(stem_path)
+        export_mock.assert_called_once_with(
+            result,
+            Path(temp_dir),
+            preview_wav=False,
+            output_stem="mix_vocals",
+        )
+
     def test_main_returns_one_for_analysis_error(self):
         stdout = io.StringIO()
         stderr = io.StringIO()
