@@ -1,0 +1,6 @@
+basic-pitch==0.4.0
+pretty_midi>=0.2.9
+librosa>=0.8.0
+numpy>=1.18
+streamlit>=1.54
+setuptools<81
