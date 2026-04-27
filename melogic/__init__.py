@@ -1,6 +1,15 @@
 """Melogic audio-to-MIDI analysis package."""
 
-from .analyzer import AnalysisError, SUPPORTED_AUDIO_EXTENSIONS, analyze_audio, note_event_to_record
+from .analyzer import (
+    AnalysisError,
+    DEFAULT_BALANCED,
+    KEYS_GUITAR,
+    PitchDetectionParams,
+    SUPPORTED_AUDIO_EXTENSIONS,
+    VOCAL_SUSTAIN,
+    analyze_audio,
+    note_event_to_record,
+)
 from .exporters import ExportError, ExportPaths, export_analysis
 from .models import AnalysisResult, NoteRecord, note_number_to_name
 from .preview import DEFAULT_PREVIEW_SAMPLE_RATE, PreviewError, write_preview_wav
@@ -20,12 +29,16 @@ __all__ = [
     "AnalysisError",
     "AnalysisMode",
     "AnalysisResult",
+    "DEFAULT_BALANCED",
     "ExportError",
     "ExportPaths",
+    "KEYS_GUITAR",
     "NoteRecord",
+    "PitchDetectionParams",
     "PreparedAnalysisInput",
     "PreviewError",
     "SUPPORTED_AUDIO_EXTENSIONS",
+    "VOCAL_SUSTAIN",
     "DEFAULT_PREVIEW_SAMPLE_RATE",
     "analyze_audio",
     "analysis_mode_description",

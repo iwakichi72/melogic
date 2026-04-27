@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib.util import find_spec
 from pathlib import Path
@@ -10,6 +11,37 @@ from .models import AnalysisResult, NoteRecord, note_number_to_name
 
 
 SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".aiff", ".aif"}
+
+
+@dataclass(frozen=True)
+class PitchDetectionParams:
+    """Tunable Basic Pitch parameters surfaced to callers."""
+
+    onset_threshold: float = 0.5
+    frame_threshold: float = 0.3
+    minimum_note_length: float = 127.70  # milliseconds
+    minimum_frequency: float | None = None
+    maximum_frequency: float | None = None
+
+
+DEFAULT_BALANCED = PitchDetectionParams()
+"""Basic Pitch defaults — keep existing behavior for general/instrumental sources."""
+
+VOCAL_SUSTAIN = PitchDetectionParams(
+    onset_threshold=0.6,
+    frame_threshold=0.18,
+    minimum_note_length=180.0,
+    minimum_frequency=80.0,
+    maximum_frequency=1100.0,
+)
+"""Vocal preset: keep sustained tails alive and reject sub-180ms fragments."""
+
+KEYS_GUITAR = PitchDetectionParams(
+    onset_threshold=0.5,
+    frame_threshold=0.3,
+    minimum_note_length=80.0,
+)
+"""Decay-instrument preset: pick up fast passages without merging too aggressively."""
 
 
 class AnalysisError(RuntimeError):
@@ -56,7 +88,10 @@ def amplitude_to_velocity(amplitude: float) -> int:
     return max(0, min(127, velocity))
 
 
-def analyze_audio(input_audio: str | Path) -> AnalysisResult:
+def analyze_audio(
+    input_audio: str | Path,
+    params: PitchDetectionParams = DEFAULT_BALANCED,
+) -> AnalysisResult:
     input_path = validate_input_audio(input_audio)
 
     try:
@@ -68,12 +103,22 @@ def analyze_audio(input_audio: str | Path) -> AnalysisResult:
             "Use the project virtual environment and run: .venv/bin/python -m pip install -r requirements.txt"
         ) from exc
 
+    predict_kwargs: dict[str, Any] = {
+        "onset_threshold": params.onset_threshold,
+        "frame_threshold": params.frame_threshold,
+        "minimum_note_length": params.minimum_note_length,
+        "minimum_frequency": params.minimum_frequency,
+        "maximum_frequency": params.maximum_frequency,
+    }
+
     try:
         model_path = preferred_basic_pitch_model_path()
         if model_path is not None:
-            _model_output, midi_data, note_events = predict(str(input_path), model_or_model_path=model_path)
+            _model_output, midi_data, note_events = predict(
+                str(input_path), model_or_model_path=model_path, **predict_kwargs
+            )
         else:
-            _model_output, midi_data, note_events = predict(str(input_path))
+            _model_output, midi_data, note_events = predict(str(input_path), **predict_kwargs)
     except Exception as exc:  # Basic Pitch can raise runtime-specific backend errors.
         raise AnalysisError(f"Basic Pitch analysis failed for {input_path}: {exc}") from exc
 

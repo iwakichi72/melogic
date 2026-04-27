@@ -13,7 +13,11 @@ import streamlit.components.v1 as components
 from melogic import (
     AnalysisError,
     AnalysisMode,
+    DEFAULT_BALANCED,
     ExportError,
+    KEYS_GUITAR,
+    PitchDetectionParams,
+    VOCAL_SUSTAIN,
     analysis_mode_description,
     analysis_mode_label,
     analyze_audio,
@@ -27,6 +31,17 @@ from melogic.visualization import build_piano_roll_rows
 
 
 DEFAULT_OUTPUT_DIR = Path("out/gui")
+
+PRESET_VOCAL = "ボーカル(伸ばし重視)"
+PRESET_BALANCED = "標準"
+PRESET_KEYS_GUITAR = "鍵盤・ギター"
+PRESET_CUSTOM = "カスタム"
+
+PRESET_PARAMS: dict[str, PitchDetectionParams] = {
+    PRESET_VOCAL: VOCAL_SUSTAIN,
+    PRESET_BALANCED: DEFAULT_BALANCED,
+    PRESET_KEYS_GUITAR: KEYS_GUITAR,
+}
 
 
 def main() -> None:
@@ -42,19 +57,20 @@ def main() -> None:
 
     left, right = st.columns([0.9, 1.1], gap="large")
     with left:
-        source_bytes, source_name, output_dir, analysis_mode = render_input_panel()
+        source_bytes, source_name, output_dir, analysis_mode, params = render_input_panel()
     with right:
         render_result_panel()
 
     if source_bytes is not None and st.button("変換する", type="primary", use_container_width=True):
-        run_conversion(source_bytes, source_name, output_dir, analysis_mode)
+        run_conversion(source_bytes, source_name, output_dir, analysis_mode, params)
 
 
-def render_input_panel() -> tuple[bytes | None, str | None, Path, AnalysisMode]:
+def render_input_panel() -> tuple[bytes | None, str | None, Path, AnalysisMode, PitchDetectionParams]:
     st.subheader("入力")
     input_mode = st.radio("入力方法", ["録音", "ファイル"], horizontal=True)
     output_dir = Path(st.text_input("出力先", value=str(DEFAULT_OUTPUT_DIR))).expanduser()
     analysis_mode = render_analysis_mode_selector()
+    params = render_pitch_params_panel(analysis_mode)
 
     source_bytes = None
     source_name = None
@@ -77,7 +93,7 @@ def render_input_panel() -> tuple[bytes | None, str | None, Path, AnalysisMode]:
             st.audio(source_bytes, format=uploaded_audio.type or "audio/wav")
 
     st.info("変換すると、MIDI / JSON / CSV / 確認用WAVが出力先に保存されます。")
-    return source_bytes, source_name, output_dir, analysis_mode
+    return source_bytes, source_name, output_dir, analysis_mode, params
 
 
 def render_analysis_mode_selector() -> AnalysisMode:
@@ -102,6 +118,78 @@ def render_analysis_mode_selector() -> AnalysisMode:
     return mode
 
 
+def render_pitch_params_panel(analysis_mode: AnalysisMode) -> PitchDetectionParams:
+    preset_options = [PRESET_VOCAL, PRESET_BALANCED, PRESET_KEYS_GUITAR, PRESET_CUSTOM]
+    default_preset = PRESET_VOCAL if analysis_mode is AnalysisMode.VOCAL else PRESET_BALANCED
+
+    with st.expander("詳細設定 (ピッチ検出)", expanded=False):
+        st.caption(
+            "Basic Pitchの閾値を切り替えて変換のクセを調整します。"
+            "「伸ばす音が途切れる」ときは frame_threshold を下げる/「ボーカル(伸ばし重視)」を選んでください。"
+        )
+        preset_name = st.selectbox(
+            "プリセット",
+            preset_options,
+            index=preset_options.index(default_preset),
+            help="ボーカル(伸ばし重視) は frame_threshold を下げて長音の途切れを防ぎます。",
+        )
+        is_custom = preset_name == PRESET_CUSTOM
+        base = PRESET_PARAMS.get(preset_name, DEFAULT_BALANCED)
+
+        frame_threshold = st.slider(
+            "frame_threshold (低いほど長音が途切れにくい)",
+            min_value=0.05,
+            max_value=0.6,
+            value=float(base.frame_threshold),
+            step=0.01,
+            disabled=not is_custom,
+        )
+        onset_threshold = st.slider(
+            "onset_threshold (高いほどアタック検出が厳しい)",
+            min_value=0.1,
+            max_value=0.9,
+            value=float(base.onset_threshold),
+            step=0.05,
+            disabled=not is_custom,
+        )
+        minimum_note_length = st.slider(
+            "minimum_note_length (ms)",
+            min_value=50,
+            max_value=400,
+            value=int(round(base.minimum_note_length)),
+            step=10,
+            disabled=not is_custom,
+        )
+        min_freq_default = float(base.minimum_frequency) if base.minimum_frequency else 0.0
+        max_freq_default = float(base.maximum_frequency) if base.maximum_frequency else 0.0
+        min_freq = st.number_input(
+            "minimum_frequency (Hz, 0で無制限)",
+            min_value=0.0,
+            max_value=8000.0,
+            value=min_freq_default,
+            step=10.0,
+            disabled=not is_custom,
+        )
+        max_freq = st.number_input(
+            "maximum_frequency (Hz, 0で無制限)",
+            min_value=0.0,
+            max_value=8000.0,
+            value=max_freq_default,
+            step=10.0,
+            disabled=not is_custom,
+        )
+
+        if is_custom:
+            return PitchDetectionParams(
+                onset_threshold=float(onset_threshold),
+                frame_threshold=float(frame_threshold),
+                minimum_note_length=float(minimum_note_length),
+                minimum_frequency=float(min_freq) if min_freq > 0 else None,
+                maximum_frequency=float(max_freq) if max_freq > 0 else None,
+            )
+        return base
+
+
 def render_result_panel() -> None:
     st.subheader("解析結果")
     result = st.session_state.get("last_conversion")
@@ -124,6 +212,15 @@ def render_result_panel() -> None:
         st.write(f"解析モード: `{result.get('analysis_mode', '標準')}`")
         st.write(f"元音源: `{result.get('source', '')}`")
         st.write(f"解析入力: `{result.get('analysis_input', result.get('source', ''))}`")
+        params = result.get("params")
+        if isinstance(params, PitchDetectionParams):
+            st.write(
+                "ピッチ検出: "
+                f"`frame={params.frame_threshold}` / "
+                f"`onset={params.onset_threshold}` / "
+                f"`min_len={params.minimum_note_length}ms` / "
+                f"`freq=[{params.minimum_frequency or '∞'}, {params.maximum_frequency or '∞'}]`"
+            )
 
     piano_roll_tab, table_tab = st.tabs(["横ノーツビュー", "一覧"])
     with piano_roll_tab:
@@ -478,13 +575,14 @@ def run_conversion(
     source_name: str | None,
     output_dir: Path,
     analysis_mode: AnalysisMode,
+    params: PitchDetectionParams,
 ) -> None:
     try:
         saved_input = save_audio_bytes(source_bytes, source_name, output_dir)
         spinner_message = build_spinner_message(analysis_mode)
         with st.spinner(spinner_message):
             prepared_input = prepare_analysis_input(saved_input.path, analysis_mode, output_dir)
-            analysis = analyze_audio(prepared_input.path)
+            analysis = analyze_audio(prepared_input.path, params=params)
             paths = export_analysis(
                 analysis,
                 output_dir,
@@ -502,6 +600,7 @@ def run_conversion(
         "analysis_input": str(prepared_input.path),
         "analysis_mode": prepared_input.label,
         "analysis_mode_short": short_analysis_mode_label(prepared_input.mode),
+        "params": params,
     }
     st.session_state["status_message"] = "変換が完了しました。"
     st.rerun()
